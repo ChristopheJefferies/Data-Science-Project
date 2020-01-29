@@ -1,0 +1,440 @@
+---
+title: 'Methods for Data Science M345 A50 Coursework 2 - Networks'
+author: "Christophe Jefferies"
+date: "11 January 2019"
+output: html_document
+---
+
+
+```{r setup, include=F}
+
+knitr::opts_chunk$set(echo = TRUE) #code chunk display settings
+
+require("igraph") #main network package we will use
+
+#Load data (presumed done on the marker's computer)
+load("C:/Users/Christophe/Documents/Imperial/Year 3/Data science/doctornet.RData")
+```
+
+This project concerns a network dataset containing information about over 200 doctors. Two doctors (nodes) are linked depending on whether or not they socialise with one another, discuss medical practice, or turn to one another for advice.
+
+We first perform some simple exploratory data analysis on the network, then search for communities within it. We explore the network's connectivity, and identify its most important nodes using a variety of techniques. We also discuss the effectiveness of these different methods, and make deductions about how doctors within the network influence each other.
+
+
+
+#Question 1
+
+Here is a plot of the network:
+
+```{r 1.1, echo=F}
+library(igraph)
+load("doctornet.Rdata")
+
+#Ntwork object
+net = as.undirected(docnet2, mode = "each") #Use the undirected version
+
+#Plot the whole graph
+set.seed(0)
+plot(net,vertex.size=2, vertex.label=NA, vertex.color="blue", vertex.frame.color=NA, ylim = c(-1,1), main = "Full network")
+```
+
+We can already see several highly-connected clumps of nodes ('communities'). The network has `r length(V(net))` vertices and `r length(E(net))` edges, so its mean degree is (2*1611)/242 = 13.314.
+
+Here is a histogram of the degree distribution:
+
+```{r 1.2, echo=F}
+#Degree distribution histogram
+hist(degree(net), main = "Histogram of degree distribution", xlab = "Degree")
+```
+
+We see most nodes have degree under 25, and that there is one strong outlier with degree over 55.
+
+We can check whether or not the degree distribution follows a power law by plotting it on a log-log scale:
+
+```{r 1.3, echo=F, warning=F}
+#make x axis logarithmic, and plot the log of the distribution. Same shape as a log-log plot (which isn't working)
+plot(log(table(degree(net))), log="x", type="p", main = "Log-log plot of degree distribution", xlab = "Degree", ylab = "Frequency (log)")
+```
+
+This doesn't resemble a straight line, so this graph does not have the scale-free property.
+
+
+
+#Question 2
+
+We can try to divide the network in to 'communities', such that there are many edges within each community but few edges between them. This is also known as clustering.
+
+One way to measure the quality of a clustering is its modularity, which compares how well-connected the individual communities are compared to what we'd expect from a random graph or wiring (with the same number of nodes and degree distribution).
+
+One clustering method is Newman's eigenvector method, which starts by splitting the graph in two such that modularity is maximised. This can then be applied recursively to each community, until modularity stops increasing. Here is a plot of the graph coloured by the resulting communities:
+
+```{r 2.1, echo=F}
+#cluster by Newman's method
+set.seed(0)
+cluster0 = cluster_leading_eigen(net)
+set.seed(0) #Plotting is slightly stochastic so set seed for consistency
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=cluster0$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network clustered by Newman's eigenvector method")
+```
+
+Its modularity score is `r modularity(cluster0)` - this will be useful in comparison to other methods. Newman's method has quite neatly separated the graph in to communities, except for the largest visible 'clump' being a mixture of two colours. Here are the community sizes:
+
+```{r 2.2, echo=F}
+#Plot community sizes
+sizes(cluster0)
+```
+
+We see that each community contains a decent portion of the nodes, except for one tiny community of size 2. On the plot, we can see this little community (in red) buried inside another one - clearly Newman's method found that separating these two modes technically increased the modularity.
+
+For comparison, here is the graph coloured by the doctors' 'City' attribute:
+
+```{r 2.3, echo=F}
+#Plot coloured by city
+set.seed(0)
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=V(net)$nodeCity, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network clustered by City")
+```
+
+This splits the graph neatly in to four communities, with just one visibly misplaced point on the edge of the largest community. We can use this as a base level to judge the quality of other clusterings. For instance, here is a confusion matrix for clustering by City and by Newman's method:
+
+```{r 2.4, echo=F}
+#Table comparing clustering and city
+table(cluster0$membership, V(net)$nodeCity)
+```
+
+The presence of a small number of large entries and many zeros indicates overall agreement between the two clustrings. The two large entries in the first column represent Newman's method splitting the large city cluster in two. The small non-zero entries indicate occasional disagreements between the two methods. Overall the two methods behaved very similarly, except for Newman's method splitting the largest cluster once more.
+
+There are many other methods for clustering; here we compare a few.
+
+'Betweenness' is a measure of how much an edge lies on shortest paths between nodes. Intuitively, an edge with high betweenness should be more likely to join two communities, as many shortest paths must pass through it. Hence by repeatedly removing the edge with the highest betweenness, we can hopefully split the graph in to meaningful clusters.
+
+Here is the resulting clustering:
+
+```{r 2.5, echo=F}
+#Plot coloured by betweenness
+set.seed(0)
+cluster1 = cluster_edge_betweenness(net)
+set.seed(0) #plotting seems slightly variable too
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=cluster1$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network clustered by betweenness")
+```
+
+and its community sizes:
+
+```{r 2.6, echo=F}
+#Plot community sizes
+sizes(cluster1)
+```
+
+This method has split the graph in to over 20 communities, many having only one node. This might happen because very important nodes need to be almost completely disconnected before their betweenness falls; we can see most of the tiny communities are buried within the largest component. Ignoring these, the clustering has otherwise quite cleanly separated the four cities in to different communities. The modularity of this clustering is `r modularity(cluster1)`, about the same as for Newman's eigenvector methods.
+
+Another approach is to start with all nodes separate, then 'agglomerate' them together in a local greedy way to maximise modularity until the whole graph is connected again. Here is the result:
+
+```{r 2.7, echo=F}
+#Plot coloured by greedy agglomeration
+set.seed(0)
+cluster2 = cluster_fast_greedy(simplify(net, remove.multiple = T))
+set.seed(0)
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=cluster2$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network clustered by greedy agglomeration")
+sizes(cluster2)
+```
+
+Similarly to Newman's method, we have five communities, two of which together form the largest City cluster. In this case one of the two communities is more dominant than before, having `r sizes(cluster2)[3]` nodes to the other's `r sizes(cluster2)[2]`. Apart from this, there are no visibly misplaced nodes and the communities are very clean. However, the modularity here is `r modularity(cluster2)`, very slightly lower than the previous methods, perhaps because the algorithm only considers local allocation for modularity rather than global.
+
+For the following approach, each node starts with a unique label, then they are all repeatedly updated with the most common label amongst their neighbours (choosing at random if there is a draw). This goes on until a stable position is reached, or until few enough nodes are changing.
+
+```{r 2.8, echo=F}
+#Plot coloured by label propagation
+set.seed(0)
+cluster3 = cluster_label_prop(net)
+set.seed(0)
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=cluster3$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network clustered by label propagation")
+sizes(cluster3)
+```
+
+We again have a quite a lot of communities, though each has at least 4 nodes this time. Only one of the city groups is not split apart in to subcommunities; the largest city group is split in to about 6. These small communities might arise because certain nodes keep choosing each other's labels, forming a little 'stable' community that survives until the end. The modularity is `r modularity(cluster3)`, very similar to the above methods.
+
+This final method uses the fact that most short random walks will tend to stay within the same community. Many random walks are used to judge the similarity of nodes, then they are grouped accordingly:
+
+```{r 2.9, echo=F}
+#Plot coloured by random walks
+set.seed(0)
+cluster4 = cluster_walktrap(net)
+set.seed(0)
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=cluster4$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network clustered by random walks")
+sizes(cluster4)
+```
+
+This method has cleanly split the graph in to communities similar those given by city, with just a few nodes in their own small communities. In particular the large component is in one piece except for just `r sizes(cluster4)[7]` nodes, much better than any of the other methods. It seems random walks will tend to stay within a large cluster, so this method was appropriate to use. The modularity is `r modularity(cluster4)`, almost identical to above. 
+
+Visually, the most clean clustering was the local greedy 'agglomeration' method. The following confusion matrix shows how well it agrees with allocation by city:
+
+```{r 2.10, echo=F}
+#greedy agglomeration vs city confusion matrix
+table(cluster2$membership, V(net)$nodeCity)
+```
+
+Ignoring the splitting of the large component in two, only one node disagrees with the city allocation. For comparison here is a confusion matrix for the last method based on random walks, and city:
+
+```{r 2.11, echo=F}
+#Random walks vs city confusion matrix
+table(cluster4$membership, V(net)$nodeCity)
+```
+
+This time we have a few stray communities making up the bigger ones, but the matrix is largely 0's, indicating overall agreement about which nodes form important clusters.
+
+
+
+# Question 3
+
+In this part we search for any giant components within the graph, and explore the graph's connectivity. Here is the graph, again coloured by which city each doctor is from:
+
+```{r 3.1, echo=F}
+#full network
+set.seed(0)
+plot(net,vertex.size=3,vertex.label=NA,vertex.color=V(net)$nodeCity, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1), main = "Network coloured by city")
+```
+
+Visibly, there is one large and well-connected component represented by one of the cities. We can see the sizes of each city group:
+
+```{r 3.2, echo=F}
+#City group sizes
+table(V(net)$nodeCity)
+```
+
+The largest city group contains about half (117/242) of all the nodes , a significant enough fraction that it could be called a giant component. Judging from the plot, all but one of its nodes are allocated to one city, so we could say the true giant component really size 118.
+
+If the graph were an Erdos-Renyi graph, we'd expect to see a giant component if the mean degree is above 1 (the current mean degree is about 13.3). To make the graph lose its giant component, we would need to remove enough edges to reduce this mean degree below 1. As there are 1611 edges and 242 nodes, this means removing 1369 edges, or about 85% of them.
+
+We can explore the graph's connectivity by deleting edges at random, and seeing how its behaviour compares to this Erdos-Renyi model prediction. The following four plots show the network after removing 25%, 50%, 75%, and 90% of its edges at random, each time coloured by its communities. (We use the community-detection method from question 2 based on random walks)
+
+```{r 3.3, loop1, echo=F}
+#Delete edges at random, occasionally plot, and store largest community sizes
+
+m = length(E(net)) #number of edges
+largestcomponent = c() #will store size of largest component at each stage
+testnet = net #make a copy of the graph from which to delete edges
+
+for (i in 1:m){
+  set.seed(0) #For comments to be consistent
+  index = sample(1:(m-i+1), 1) #pick a random remaining vertex
+  testnet = delete_edges(testnet, index) #remove that vertex
+  cluster = cluster_walktrap(testnet) #Find communities with a good method from question 2 which is less prone to splitting up largest community
+  largestcomponent = c(largestcomponent, max(sizes(cluster))) #Store size of largest community
+  if (is.element(i, c(400, 800, 1200, 1450))) { #occasionally plot the network
+    plot(testnet,vertex.size=3,vertex.label=NA,vertex.color=cluster$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1))
+  }
+}
+```
+
+The first plot is structurally much the same as the full graph. The second is a bit more fragmented, but still clearly has a dominant component (although the clustering algorithm has split it in to two communities). In the third plot, there are just hints of a giant component structure, and the final plot is too sparse to have any structure at all.
+
+We can also plot the size of largest component against the fraction of nodes removed:
+```{r 3.4, echo=F}
+#Plot largest community sizes
+plot((1:m)/m, largestcomponent, main = "Fraction of edges removed against size of largest component", xlab = "Fraction of edges removed", ylab = "Size of largest component")
+```
+
+The size of the largest component generally decreases, but is still very variable. It would be best to average the process over more iterations, to counteract the fact that important edges could randomly be deleted very early or late, and also to counteract any strange behaviour from the clustering algorithm.
+
+The following is the result of running the process 10 times, and plotting the average largest component size for each fraction of nodes removed:
+
+```{r 3.5, echo=F}
+#Run the above 10 times and average
+
+#preallocate matrix to store all the component sizes for each run
+largestcomponents = matrix(c(0*(1:(10*m))), nrow = 10)
+
+for(iteration in 1:10){
+  testnet = net #refresh graph from which to delete edges
+  for (i in 1:m){
+    index = sample(1:(m-i+1), 1) #pick vertex
+    testnet = delete_edges(testnet, index) #remove it
+    cluster = cluster_walktrap(testnet) #Find communities
+    largestcomponents[iteration, i] = max(sizes(cluster)) #Store largest community size
+  }
+}
+
+#Plot results
+plot((1:m)/m, colMeans(largestcomponents), main = "Fraction of edges removed against mean size of largest component", xlab = "Fraction of edges removed", ylab = "Mean size of largest component")
+
+```
+
+We generally start with a large component of size 80-100, then once about 25% of edges are removed, the largest component size varies around 60-70. This is somewhat stable until around 60% of edges are removed, at which point the largest component size drops down to around 40. This then of course descends to zero as all the edges are removed.
+
+The linearly descending behaviour towards the end of the graph suggests that the only giant component is the whole graph, as the removal of a single node decreases the largest component size by about 1 all the way down to 0. The more stable average component size of 60-70 around the middle might be indicative of a large component that isn't affected by the removal of a few edges. This change in behaviour suggests that removing around 75% of edges is enough to ensure there is no giant component.
+
+This is a little lower than the Renyi-Erdos model predicted, though this isn't surprising; the edges in this graph are not random, but depend on social and professional relationships between the doctors. A random graph will likely not have such structured communities within it, whilst in this graph removing 75% of edges is enough to break apart any sub-community of doctors.
+
+
+
+# Question 4
+
+Centrality is a measure of a node's importance. Here we compare several measures of centrality, and use them to identify the most important nodes in our network of doctors. We also discuss the effect of removing these important nodes from the network.
+
+```{r 4.1, echo=F}
+#Run all centrality algorithms now for cleaner code later
+
+#Degree centrality
+centrality1 = centr_degree(net)$res/241 #res is the list of centralities
+#normalizes by N-1
+
+#Betweenness centrality
+centrality2 = betweenness(net)/241
+#Outputs a numeric vector
+#If that runs slowly see estimate_betweenness
+
+#Closeness centrality
+centrality3 = closeness(net) #automatically normalised
+
+#Eigenvector centrality
+centrality4 = centr_eigen(net)$vector
+
+#Page-rank centrality
+centrality5 = page_rank(net)$vector
+```
+
+Degree centrality simply assigns the degree of a node as its centrality (here we also normalize by dividing by N-1 = 241). If we plot the frequency of each degree centrality, we just get the degree distribution. For comparison to other methods (with continuous outcomes), it is more informative to sort the centralities and plot them in order, and analyse the behaviour of the curve:
+
+```{r 4.2, echo=F}
+#Plot sorted degree centralities
+plot(sort(centrality1), main = "Sorted degree centralities", xlab = "", ylab = "Centrality")
+```
+
+We can see that many nodes have a centrality around 0.05, and very few a centrality above 0.1. More important than the actual values (which depend on scaling) is the shape of the curve; in other words, here most nodes have a 'medium' centrality relative to the others and few nodes have very high or very low centrality.
+
+A better test of a centrality measure might be how much removing the most central nodes 'disrupts' the network, i.e. how disconnected it becomes. We can test this by tracking the size of the largest component as we did above; if the centrality measure is good at choosing important nodes, then removing them will break apart any large component
+
+The following shows the graph after removing the most degree-central 10%, 20%, 30%, and 40% of nodes:
+
+```{r 4.3, echo=F}
+#The following function:
+# takes in a list of node centralities
+# generates a list of node indices in order of their centrality
+# repeatedly removes the node with highest centrality
+# occasionally plots the graph
+# outputs a list of the size of the largest component at each stage
+
+n = length(V(net)) #number of nodes
+
+processcentralities = function(centrality, plot=T){
+    mycentrality = centrality #Keep separate from original as we'll be deleting entries
+    nodeindices = c()
+    
+    #Make list of node indices in order of importance
+    for (k in 1:n){
+      biggestindex = which(mycentrality == max(mycentrality))[1] #Index of node with largest centrality
+      nodeindices = c(nodeindices, biggestindex) #Add this index to the list
+      mycentrality[biggestindex] = 0 #Stop considering that entry from now on
+    }
+    
+    largestcomponents = c() #Will store size of largest component at each stage
+    
+    #Remove important nodes one by one
+    for (i in 1:n-1){
+      testnet = delete_vertices(net, nodeindices[1:i]) #Do it like this as the indices change when the graph size changes
+      cluster = cluster_walktrap(testnet) #Find communities in resulting network
+      largestcomponents = c(largestcomponents, max(sizes(cluster))) #store largest component size
+      
+      #Occasionally plot if it's the first iteration
+      if (is.element(i, as.integer(c(10, 20, 30, 40)*(242/100))) && plot==T){
+        plot(testnet,vertex.size=3,vertex.label=NA,vertex.color=cluster$membership, vertex.frame.color=NA,xlim=c(-1,1),ylim=c(-1,1))
+      }
+    }
+  return(largestcomponents) #to plot mean largest component size later
+}
+
+maxsizes1 = processcentralities(centrality1)
+```
+
+With just the most important 10% of nodes removed, there is still a very clear highly-connected giant component (though the clustering algorithm has split it in two). Once 20% have been removed, there is still a dominant component but it is not nearly as densely connected. With 30% removed, there is only a suggestion of one main component, and with 40% removed the graph is too sparse to have much structure at all.
+
+Here is a plot of the size of the largest community against the fraction of nodes removed:
+
+```{r 4.4, echo=F}
+plot((1:n)/n, (maxsizes1), main = "Fraction of nodes removed against size of largest community", xlab = "Fraction of nodes removed", ylab = "Size of largest community")
+```
+
+We can see that the largest component size decreases quickly overall as the most central 40% of nodes are removed, and then decreases more slowly once the graph is very sparse. This might suggest disappearance of a giant component, but the plot might be more useful in comparison to the equivalent plot for other centrality measures.
+
+Betweenness can also be used as a centrality measure. Here is a plot of the sorted betweenness centralities:
+
+```{r 4.5, echo=F}
+plot(sort(centrality2), main = "Sorted betweenness centralities", xlab = "", ylab = "Centrality")
+```
+
+This time most centralities are lower (relative to the others), with just a few high outliers. Here are the corresponding graph plots with 10%, 20%, 30%, and 40% of the nodes removed:
+
+```{r 4.6, echo=F}
+maxsizes2 = processcentralities(centrality2)
+```
+
+Their behaviour is largely the same as for degree centrality. The later plots seem slightly less sparse than before, perhaps because removing high-degree nodes will by nature remove a lot of edges, whilst removing high-betweenness nodes doesn't necessarily do this.
+
+Here is the largest community size as we remove the nodes with highest betweenness:
+
+```{r 4.7, echo=F}
+plot((1:n)/n, (maxsizes2), main = "Fraction of nodes removed against size of largest community", xlab = "Fraction of nodes removed", ylab = "Size of largest community")
+```
+
+Again the behaviour is similar, though here the size of the largest component stops being variable much sooner. This might be because removing nodes with high betweenness tends to split the graph in to communities, so once this has happened, the largest community is just picked apart a node at a time.
+
+For the remaining three centrality measures, the graph plots are much the same as for the above two, so we just consider the sorted centrality plots and the largest component sizes.
+
+Another common measure of centrality is closeness, the idea being that if a node has a short distance to all other nodes, then it is probably important. Here is a plot of the sorted closeness centralities:
+
+```{r 4.8, echo=F}
+plot(sort(centrality3), main = "Sorted closeness centralities", xlab = "", ylab = "Centrality")
+```
+
+In this case we have few outliers for both high and low centralities. This shows the rarity of both very poorly-connected nodes far 'outside' the graph, and of extremely central nodes close the whole rest of the graph. Here is the largest community size as nodes are removed:
+
+```{r 4.9, echo=F}
+maxsizes3 = processcentralities(centrality3, plot=F)
+plot((1:n)/n, (maxsizes3), main = "Fraction of nodes removed against size of largest community", xlab = "Fraction of nodes removed", ylab = "Size of largest community")
+```
+
+The behaviour is similar to before except the size of the largest component seems suddenly to drop occasionally. This might be because the node with the highest closeness is keeping a large cluster togther (like the centre of a 'star' graph), and its removal breaks this apart.
+
+The following is the result of applying eigenvector centrality, which seeks to assign centralities such that a node is important if it is connected to other important nodes (this is done recursively).
+
+```{r 4.10, echo=F}
+plot(sort(centrality4), main = "Sorted eigenvector centralities", xlab = "", ylab = "Centrality")
+```
+
+As one might expect, this measure places great emphasis on a small number of nodes all connected to each other, whilst most nodes are left outside of this bubble.
+
+```{r 4.11, echo=F}
+maxsizes4 = processcentralities(centrality4, plot=F)
+plot((1:n)/n, (maxsizes4), main = "Fraction of nodes removed against size of largest community", xlab = "Fraction of nodes removed", ylab = "Size of largest community")
+```
+
+The largest community size is very variable at first, perhaps because removing one of these crucial nodes in the 'important bubble' changes the structure of the network significantly.
+
+This final measure is page-rank centrality, the algorithm used by Google to place its search results in order. This is similar to eigenvector centrality, but it compensates both for high or low centralities propagating to other nodes (i.e. hopefully preventing a 'bubble' as seen above).
+
+```{r 4.12, echo=F}
+plot(sort(centrality5), main = "Sorted page-rank centralities", xlab = "", ylab = "Centrality")
+```
+
+There is still a focus on a small number of nodes, but the other nodes are not so completely ignored as they were for eigenvector centrality.
+
+```{r 4.13, echo=F}
+maxsizes5 = processcentralities(centrality5, plot=F)
+plot((1:n)/n, (maxsizes5), main = "Fraction of nodes removed against size of largest community", xlab = "Fraction of nodes removed", ylab = "Size of largest community")
+```
+
+The largest community size stays higher a bit longer than the others methods, perhaps because the prevention of centrality propagation means no single node is crucial to a community's structure.
+
+We can plot two measures of centrality against each other node-by-node, and see how strongly they correlate. For instance, here is a comparison of degree centrality and page-rank centrality:
+
+```{r 4.14, echo=F}
+plot(centrality1, centrality5, main = "Degree centrality against page-rank centrality", xlab = "Degree centrality", ylab = "Page-rank centrality")
+```
+
+The clear linear relationship shows that the overall outcome of these two approaches is quite similar, perhaps because by nature nodes with high degree will tend to have important neighbours. As a contrast, here is a comparison of degree and betweenness centrality:
+
+```{r 4.15, echo=F}
+plot(centrality1, centrality2, main = "Degree centrality against betweenness centrality", xlab = "Degree centrality", ylab = "Betweenness centrality")
+```
+
+This time the two algorithms have chosen very differently, only clearly agreeing on the three most important nodes and some totally unimportant ones. It seems having high degree does not necessarily correlate strongly to having a high betweenness; a node may join two communities without being in a well-connected community itself.
+
+As a whole, it seems that removing the most important 20-30% of nodes according to any sensible measure is enough to ensure the graph loses its core cluster structure. In other words, the community of doctors is implicitly quite reliant on a fairly small percentage of its members.

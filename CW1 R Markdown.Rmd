@@ -1,0 +1,485 @@
+---
+title: 'Methods for Data Science M345 A50 Coursework 1 - Machine Learning'
+author: "Christophe Jefferies"
+date: "16 November 2018"
+output: html_document
+---
+
+```{r setup, include=F}
+#Note that the 'pipe' command %>% comes with with 'magrittr' package
+
+knitr::opts_chunk$set(echo = TRUE) #code chunk display settings
+require("ggplot2") #etc., require everything needed here. Presume installed
+require("Rtsne")
+require("gridExtra")
+require("ROCR")
+require("class")
+require("rpart")
+require("randomForest")
+
+#Load druguse data; this is presumed done on the marker's computer, as said in the coursework
+load("C:/Users/Christophe/Documents/Imperial/Year 3/Data science/druguse.RData")
+```
+
+In this project we work with the dataset 'druguse'. This is data from over 1800 people about their background, personality traits, and use of both legal and illegal substances.  
+We perform exploratory data analysis (EDA), and then use a variety of methods for classifying and interpreting the data. We conclude with a discussion of the quality of these models, what conclusions we can draw from them, and how justified it is to make deductions about the data from them.
+
+#Question 1
+
+###1.1
+
+Here are two coloured histograms. The first has the predictor 'country' on the x-axis, and its bars are coloured by the predictor 'UseLevel'; the second is the same but with 'gender' on the x-axis.
+
+```{r 1.1, echo=F}
+# Use ggplot with geom_bar
+
+#Country vs UseLevel:
+ggplot(druguse, aes(x=country, fill=UseLevel)) + geom_bar() + labs(title="Histogram of country coloured by UseLevel") + theme(plot.title = element_text(hjust = 0.5))
+#last bit just centers the title
+
+#Gender vs UseLevel:
+ggplot(druguse, aes(x=gender, fill=UseLevel)) + geom_bar() + labs(title="Histogram of gender coloured by UseLevel") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+###1.2
+
+The following plots show some exploratory data analysis (EDA) on the dataset.
+
+TSNE is a powerful non-linear dimensionality reduction algorithm; it works by placing a point in a low-dimensional space for every true data point, then shifting them around to match 'closeness' (formally, to minimise a certain divergence between pairs of points and their projections).
+
+Here is a TSNE representation of all the predictors, coloured by UseLevel. Note that the summaries of overall use (any, severity, UseLevel) were not used to create the projection; the clean separation is only a result of the algorithm regarding these points as 'close' by some measure.
+
+```{r 1.2.1, echo=FALSE, results='hide'}
+#TASK: prevent this spitting out code in HTML
+Labels = druguse$UseLevel
+set.seed=(0)
+tsne = Rtsne(druguse[,-(31:33)], dims = 2, perplexity=30, verbose=TRUE, max_iter = 500)
+#See how this naturally splits up the UseLevels. Just a nice interpretable format
+ggplot(as.data.frame(tsne$Y)) + geom_point(aes(x =tsne$Y[,1], y = tsne$Y[,2], color = as.factor(Labels))) + labs(title="TSNE dimensionality reduction, coloured by UseLevel", x="", y="", color = "UseLevel") + theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+This is a reassuring first sight, as it suggests that we will be able to classify people's UseLevel based only on the predictors. We could draw a similar conclusion from a PCA projection, but this makes the distinction particularly clear. (Note that labelling the axes in the above figure would not make sense; the projection could be rotated any way around, as   all that matters is the closeness of points.)
+
+The following bar chart compares how recently people in the dataset had used legal substances. The usage ratings range from 0 (never used) through 3 (used in last year) to 6 (used in last day).
+
+```{r 1.2.2, echo=F}
+
+#Bar: comparison of recent use of legal substances in this dataset
+#Can probably define A more efficiently
+legaldata=matrix(c(table(druguse[13]), table(druguse[14]), table(druguse[15]), table(druguse[16])), nrow=4, ncol=7, byrow=TRUE)
+barplot(legaldata, beside=T, names=0:6, xlab="Usage", ylab="Count", main="Use of four legal substances", col=c("#FD5757","#6C57F7","#61F757","#FFFF5A"), legend.text=c("Caffeine", "Chocolate", "Nicotine", "Alcohol"), args.legend=c(x=20, y=1100))
+
+```
+
+Many people had had drunk coffee in the last day (hence presumably did so on a regular basis). We also see from the green bars that a sizeable portion of people used to smoke but don't any more.
+
+This is a jitter plot comparing age with different personality traits.
+
+```{r 1.2.3, echo=F}
+
+#TASK: Add a legend
+
+agesasnumbers = sapply(as.character(druguse[[1]]), switch, "18-24"=21, "25-34"=29.5, "35-44"=39.5, "45-54"=49.5, "55-64"=59.5, "65+"=75, USE.NAMES = F)
+uselevelcolours = sapply(as.character(druguse[[33]]), switch, "low" = "red", "high" = "blue", USE.NAMES = F)
+p1 = ggplot(druguse) + geom_point(aes(x=druguse$opentoexperience, y = agesasnumbers), colour=as.factor(uselevelcolours), position="jitter") + labs(title="", x="opentoexperience", y="Age")
+p2 = ggplot(druguse) + geom_point(aes(x=druguse$agreeableness, y = agesasnumbers), colour=as.factor(uselevelcolours), position="jitter") + labs(title="", x="agreeableness", y="Age")
+p3 = ggplot(druguse) + geom_point(aes(x=druguse$impulsiveness, y = agesasnumbers), colour=as.factor(uselevelcolours), position="jitter") + labs(title="", x="impulsiveness", y="Age")
+p4 = ggplot(druguse) + geom_point(aes(x=druguse$sensation, y = agesasnumbers), colour=as.factor(uselevelcolours), position="jitter") + labs(title="", x="sensation", y="Age")
+require("gridExtra")
+grid.arrange(p1, p2, p3, p4, nrow = 2, top = "Age against four personality traits, coloured by UseLevel")
+
+```
+
+Each of these plots shows a general diagonal shift in colour, representing behavioural changes with age and personality. For instance, young people with a high sensation rating almost exclusively have a high (blue) UseLevel, whilst the opposite is true for oler people with a low sensation rating. Young people with a high UseLevel tend to be less agreeable, but more impulsive and open to experiences.
+
+This next plot compares caffeine and heroin usage with overall illicit substance use (severity).
+
+```{r 1.2.4, echo=F}
+#Scatter: caffeine and heroin vs severity. (Careful - severity is calculated directly from illicit drugs)
+ggplot(druguse) + geom_point(aes(x = caffeine, y = severity, color = 'Caffeine')) + geom_point(aes(x = heroin, y = severity, color = 'Heroin')) + labs(title="Caffeine and heroin usage vs overall severity", x ="Usage", y = "Overall severity", colour = "Substance") + theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+If someone's caffeine rating is low, then they certainly don't have a high overall severity rating. Any recent heroin use links with a high overall severity; however there are many people with no heroin use but nonetheless a high severity rating. (This heroin comparison must be taken with a pinch of salt, as 'severity' is calculated directly from the illicit substance predictors including heroin.)
+
+The following plot marks what percentage of people from each country had drunk within the last week (a rating greater than 4). We could interpret this as representing the percentage of heavy or frequent drinkers from each country.
+
+```{r 1.2.5, echo=F}
+#Point: country vs percent heavy drinkers (alcohol >=5)
+heavydrinkertots = rowSums(table(druguse$country, druguse$alcohol)[,c(5:7)]) #add up columns for alcohol >=5 for each country
+countrytots = table(druguse$country) #total from each country
+newframe = data.frame(table(druguse$country), heavydrinkertots/countrytots)[,-3] #country vs. percentage
+ggplot(newframe, aes(x=Var1, y=Freq.1)) + geom_point(size = 5) + labs(title="Percentage of recent drinkers by country", x ="Country", y = "Percentage who have drunk in the last week") + theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+The UK ranks highest here, bu not by much. New Zealand is lowest, though there were only 5 people from there in the whole dataset, so this may not be representative of the actual population.
+
+This final plot gives a picture of enthusiasm for chocolate amongst different countries.
+
+```{r 1.2.6, echo=F}
+#Bar: country coloured by chocolate. Could use a box plot too
+ggplot(data=druguse[order(druguse$chocolate),]) + geom_bar(aes(x=country, y="count", fill=chocolate), stat="identity") + labs(title="Country counts coloured by chocolate-eating", x ="Country", y = "Count") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+The absolute sizes of the bars here are of little significance; they simply show how well-represented each country was in the sample population. More interesting is the fraction of each colour in every bar: universally, about one third to a half of people had eaten chocolate very recently, and very few people (if any) had never eaten chocolate. (Perhaps this suggests that human beings generally enjoy chocolate...)
+
+
+
+
+
+
+
+
+
+
+#Question 2
+
+
+In this question we use a logistic regression model to predict UseLevel based on background, personality, and legal substance use. We evaluate the accuracy of the model, analyse the quality of the classifier, and apply some cross-validation.
+
+###2.1
+
+We first make a dataframe containing only these predictors, and separate training and testing data:
+
+```{r 2.1.1}
+#Ignore the columns we won't use
+df = druguse[,-(17:32)]
+#Reformat the UseLevel column for correct ROC analysis later
+df[[17]] = sapply(as.character(df[[17]]), switch, "low"=0, "high"=1, USE.NAMES = F)
+#Separate train data (first 1400 rows) and test data (remaining rows)
+drugusetrain = df[1:1400,]
+drugusetest = df[-(1:1400),]
+```
+
+We then fit a logistic regression model to the training data, and see a summary
+
+```{r 2.1.2}
+model = glm(UseLevel ~., family=binomial(link='logit'), data=drugusetrain)
+summary(model)
+```
+
+In particular, a high coefficient for 'estimate' represents playing an important role in predicting UseLevel. For instance, nicotine has a fairly high estimate coefficient, so is a good indicator of UseLevel, whilst caffeine is closer to zero and so is less informative. We could conclude that being a smoker means you are more likely to have a high UseLevel, whereas eating chocolate does not necessarily imply this.
+
+The very highest 'estimate' coefficient is for ethnicityMixed-Black/Asian, but there only only 3 instances of this predictor class (all with high UseLevels), so in reality this is not very informative. This can also be seen from the huge standard error coefficient, which follows from the tiny sample size.
+
+The meaningful predictors with the highest coefficients are ethnicityMixed-White/Asian, ethnicityWhite, gendermale, and sensation. Of these, gendermale and sensation have an especially small $P(>|z|)$ value; hence deducing that being male and having a high sensation rating are good predictors of UseLevel is statistically justified, and not just an effect of the data's structure (as was the case for ethnicityMixed-Black/Asian).
+
+
+###2.2
+
+We can also use the model to make predictions; we can test the accuracy of predictions on the test data.
+
+```{r 2.2.1}
+#Compute the predicted probability of high UseLevel
+pp = predict(model, drugusetest, type="response")
+#Choose a threshold (here 0.5) and predict TRUE when above this
+mypreds = (pp>0.5)
+Trueclasses = (drugusetest$UseLevel==1)
+```
+
+This table shows how many of the predictions are correct (TRUE) and incorrect (FALSE)
+```{r 2.2.2, echo=F}
+table(mypreds==Trueclasses)
+```
+
+This table separates the classifications into True Positive/Negative and False Positive/Negative.
+```{r 2.2.3, echo=F}
+table(mypreds, Trueclasses)
+```
+
+
+###2.3
+
+The accuracy of the model is
+
+```{r 2.3.1, echo=F}
+print(paste("Accuracy:", sum(mypreds==Trueclasses)/length(Trueclasses)))
+```
+
+We can examine the quality of the classifier in more detail with ROC analysis. Rather than choosing one threshold, we can vary it from 0 to 1 and track the True Positive and False Positive rates (TPR, FPR) as this happens.
+
+```{r 2.3.2, echo=F}
+#Create a function that can do the above for any threshold
+predfunction = prediction(pp, drugusetest$UseLevel)
+#Compute the TPR and FPR as the threshold varies
+perf = performance(predfunction, measure = "tpr", x.measure = "fpr")
+#Plot resulting ROC curve
+plot(perf, main = "ROC curve for logistic regression classifier")
+```
+
+A good indicator of a high-quality classifier is a high area under the ROC curve; this means that for some value of the parameter we are varying, the TPR will be high and the FPR will be low (because the curve always joins bottom left to top right), which is ideal.
+
+```{r 2.3.3, echo=F}
+#Area under curve
+print(paste("Area under curve:", performance(predfunction, measure = "auc")@y.values[[1]]))
+```
+
+This is a high AUC, so the classifier (with a well-chosen threshold) is of good quality.
+
+
+###2.4
+
+The above results might have depended notably on our choice of testing and training data. To see how the classifier might fare against a different dataset, we can use K-folds cross-validation, i.e. repeatedly use different parts of the dataset as test data. Here we use K=10.
+
+```{r 2.4.1}
+K=10 #Number of folds
+N=nrow(df) #For more readable code
+Accuracies = 0*(1:K) #Store accuracies for each fold
+
+for (i in 1:K){
+  #Pick out test indices for this fold
+  index = (as.integer((i-1)*N/K)+1):(as.integer(i*N/K))
+  #Separate train and test data
+  traindata = df[-index,]
+  testdata = df[index,]
+  
+  #Fit logistic regression model and make predictions
+  model = glm(UseLevel ~., family=binomial(link='logit'), data=traindata)
+  pp = predict(model, testdata, type="response")
+  
+  #Calculate, print, and record the accuracy
+  Accuracy = sum((pp>0.5) == (testdata$UseLevel==1))/nrow(testdata)
+  print(paste("Test", i, ": Accuracy", Accuracy))
+  Accuracies[i] = Accuracy
+}
+
+paste("Average accuracy is", sum(Accuracies)/10)
+```
+
+The model is quite consistent across the different folds. We could reasonably expect the about the above average accuracy on a new, similar dataset.
+
+
+
+
+
+
+
+
+
+
+#Question 3
+
+Other methods could also be used to solve the same classification problem. Here we use KNN. (Use other methods here too?)
+
+Some predictors are currently factors (which aren't properly compatible with KNN), so we convert them to numerical values.
+
+```{r 3.1.1}
+#Replace agegroup classes with their midpoints (and 65+ with 70)
+df = druguse
+df[[1]] = sapply(as.character(df[[1]]), switch, "18-24"=21,"25-34"=29.5,"35-44"=39.5,"45-54"=49.5,"55-64"=59.5,"65+"=70, USE.NAMES = F)
+
+#Replace gender with female = 0, male = 1
+df[[2]] = sapply(as.character(df[[2]]), switch, "female"=0, "male"=1, USE.NAMES = F)
+```
+
+We ignore the 'country' and 'ethnicity' predictors as these don't separate well in to two categories, nor do they map well on to a numerical scale.
+
+```{r 3.1.2}
+df = df[,-c(4, 5, 17:32)] #Ignore country, ethnicity, and the other columns we're not using
+
+#Center and scale the remaining 14 predictor columns ready for KNN
+df[,1:14] = scale(df[,1:14], center=TRUE, scale=TRUE)
+
+#Apply K-folds with K=10 (the final accuracy is quite independent of this K)
+K=10
+N = nrow(df)
+Accuracies = 0*(1:K)
+
+for (i in 1:K){
+  #Pick out train and test data as before
+  index = (as.integer((i-1)*N/K)+1):(as.integer(i*N/K))
+  traindata = df[-index,]
+  testdata = df[index,]
+  
+  #Perform KNN classification and calculate accuracy
+  knnpredictions = knn(train=traindata[,-15], test=testdata[,-15], cl=traindata[,15], k=10)
+  numbercorrect = sum(knnpredictions==(df$UseLevel[index]))
+  print(paste("Fold", i, "Accuracy:", numbercorrect/nrow(testdata)))
+  Accuracies[i] = numbercorrect/nrow(testdata)
+}
+paste("Average accuracy is", sum(Accuracies)/K)
+```
+
+This is quite a high accuracy for such a simple method. Using K-folds again helps us estimate how the method could perform on observations outside of the training set.
+
+
+
+
+
+
+
+
+
+
+#Question 4
+
+###4.1
+
+In this part we will use a random forest to predict whether or not someone has ever used heroin. We will use all the background, personality, and legal substance use predictors as before, but will also include the illicit substance predictors.
+
+We will not include the heroin predictor itself, otherwise a single decision tree could perfectly split the data using one branch split; it's only meaningful to deduce heroin use from the _other_ predictors. We also ignore the summary predictors 'any', 'severity', and 'UseLevel' as these are computed directly from illicit drug use.
+
+After setting up the data, we implement a single decision tree just for comparison, and then a full random forest.
+
+```{r 4.1.1, warning=F}
+#Make a predictor with value "yes" if someone has ever used heroin, else "no"
+heroinlogical = (druguse$heroin>0)
+usedheroin = sapply(as.character(heroinlogical), switch, "FALSE"="no", "TRUE"="yes", USE.NAMES = F)
+
+#Data and labels
+drugusetrain = druguse[1:1400,-c(24, 31:33)] #training data
+usedherointrain = usedheroin[1:1400] #training labels
+drugusetest = druguse[-(1:1400),-c(24, 31:33)] #test data
+usedherointest = usedheroin[-(1:1400)] #test labels
+
+#A single decision tree for comparison: fit model to data and make predictions
+set.seed(0)
+decisiontree = rpart(usedherointrain ~., method="class", data = drugusetrain)
+treepred=predict(decisiontree, newdata = drugusetest,type="class")
+table(treepred, usedherointest)
+print(paste("Accuracy:", sum(treepred==usedherointest)/length(usedherointest)))
+```
+
+This is a very high accuracy for a single tree, suggesting that heroin use can be predicted from the other predictors without too much effort. Of course, one tree generally has high variance, and a random forest might improve this further.
+
+```{r 4.1.2}
+#Use logical labels for randomForest
+set.seed(0)
+randfor = randomForest(heroinlogical[1:1400] ~., data = drugusetrain, importance = TRUE, ntree=200)
+#Make predictions, table, and accuracy
+forestpred = as.logical(round(predict(randfor, newdata = drugusetest, data = drugusetrain)))
+table(forestpred, heroinlogical[-(1:1400)])
+print(paste("Accuracy:", sum(forestpred==heroinlogical[-(1:1400)])/length(heroinlogical[-(1:1400)])))
+```
+
+The random forest's accuracy is slightly higher, probably because averaging over more trees inevitably makes the classifier more robust, and because forests usually deal better with high-dimensionality problems than individual trees. However, the difference is not large (even for quite a large number of trees), so perhaps a single tree isn't so variable for this dataset after all.
+
+
+###4.2
+
+Based on my EDA, an interesting problem could be to explore the variety of drugs each person has used. In particular, the question I seek to answer is: which of background, personality, and legal substance use best predicts the total number of illicit drugs someone has ever taken? In addition, how much do individual predictors such as 'opentoexperience' 'sensation', and 'education' affect how many drugs someone has tried?
+
+This can be more clearly motivated by another dimensionality reduction visualisation. If we make a TSNE projection based only on background, personality, and legal substance use, and then colour it by total number of illicit drugs taken, we can certainly see some structure (patches of similar colour, especially for extreme ratings):
+
+```{r 4.2.1, echo=F, results='hide'}
+#Make a new outcome counting total number of illicit drugs ever taken
+numberillegalused = rowSums(druguse[17:30]>0)
+#Plot TSNE projection without using illicit drug predictors
+set.seed=(0)
+tsne = Rtsne(druguse[,-(17:33)], dims = 2, perplexity=30, verbose=TRUE, max_iter = 500)
+ggplot(as.data.frame(tsne$Y)) + geom_point(aes(x =tsne$Y[,1], y = tsne$Y[,2], color = as.factor(numberillegalused))) + labs(title="TSNE druguse dimensionality reduction coloured by number of illicit drugs taken", x ="", y = "", color = "")
+```
+
+Let's see how the number of illegal drugs ever used is distributed across the population:
+
+```{r 4.2.2}
+table(numberillegalused)
+plot(table(numberillegalused), main="Number of illicit drugs used", xlab = "Number of drugs", ylab="Count")
+```
+
+We could use a variety of methods to answer the question; however, since we are comparing how different sets of predictors correlate with an outcome, it will be useful to have a quanitifiable measure of this correlation.
+
+Whilst neural networks and support vector machine make good classifiers, they are not so easy to interpret with regards to correlations in the data; for instance, the 'black box' of weights and biases in a large neural network gives very little information about why certain predictors might affect certain outcomes.
+
+Therefore I will consciously choose logistic regression, due to its directly interpretable 'estimation' coefficients, over these other methods.
+
+This will work best if we split 'numberillegalused' in to "low" and "high" as before. From the above plot, where the median lies in the above table, and visual intuition, 5 seems like a good cutoff point.
+
+We now apply logistic regression three times, once for each batch of predictors. The code is similar to before, but with different train and test data and different labels for each of the three groups.
+
+First for all the background predictors:
+
+```{r 4.2.3, echo=F}
+
+df = druguse
+Trueclasses = as.numeric((numberillegalused>5)) #True classifications - will use for testing all three
+#Split in to three pairs of train/test data for background, personality, legal substance use
+#We don't use the three summary predictors at all as these are calculated directly from illicit drug use
+alltrain = df[1:1400,]
+alltest = df[-(1:1400),]
+trainlabels = Trueclasses[1:1400]
+testlabels = Trueclasses[-(1:1400)]
+backgroundtrain = alltrain[,c(1:5)]
+backgroundtest = alltest[,c(1:5)]
+personalitytrain = alltrain[,c(6:12)]
+personalitytest = alltest[,c(6:12)]
+legalusetrain = alltrain[,c(13:16)]
+legalusetest = alltest[,c(13:16)]
+
+#BACKGROUND
+backgroundmodel = glm(trainlabels ~., family=binomial(link='logit'), data=backgroundtrain)
+backgroundprobs = predict(backgroundmodel, backgroundtest, type="response")
+backgroundpreds = (backgroundprobs>0.5)
+table(backgroundpreds, testlabels) #Showing TP, TN, FP, FN
+print(paste("Accuracy is", sum(backgroundpreds==testlabels)/length(testlabels))) #Print the accuracy
+```
+
+Here is the ROC curve for the classifier:
+
+```{r 4.2.4, echo=F}
+#Draw ROC curve
+pr = prediction(backgroundprobs, testlabels) # creates the function; can take any threshold, not just 0.5
+prf = performance(pr, measure = "tpr", x.measure = "fpr") # find the performance
+plot(prf, main="ROC curve: logistic regression using only background predictors")
+```
+
+The same for personality:
+
+```{r 4.2.5, echo=F}
+#PERSONALITY
+personalitymodel = glm(trainlabels ~., family=binomial(link='logit'), data=personalitytrain)
+personalityprobs = predict(personalitymodel, personalitytest, type="response")
+personalitypreds = (personalityprobs>0.5)
+table(personalitypreds, testlabels) #Showing TP, TN, FP, FN
+print(paste("Accuracy is", sum(personalitypreds==testlabels)/length(testlabels))) #Print the 
+#Draw ROC curve
+pr = prediction(personalityprobs, testlabels)
+prf = performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="ROC curve: logistic regression using only personality predictors")
+```
+
+And for legal drug use:
+
+```{r 4.2.6, echo=F}
+#LEGALUSE
+legalusemodel = glm(trainlabels ~., family=binomial(link='logit'), data=legalusetrain)
+legaluseprobs = predict(legalusemodel, legalusetest, type="response")
+legalusepreds = (legaluseprobs>0.5)
+table(legalusepreds, testlabels) #Showing TP, TN, FP, FN
+print(paste("Accuracy is", sum(legalusepreds==testlabels)/length(testlabels))) #Print the 
+#Draw ROC curve
+pr = prediction(legaluseprobs, testlabels)
+prf = performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="ROC curve: logistic regression using only legal substance use predictors")
+```
+
+All of these have a reasonable ROC curve and a medium-high accuracy; given that we are using fewer predictors each time, I think it is statistically justified to draw conclusions from the resulting coefficients.
+
+
+
+
+
+
+
+
+
+#Question 5
+
+Here are the coefficients for us to interpret:
+
+```{r 4.2.4a, echo=F}
+backgroundmodel$coefficients
+personalitymodel$coefficients
+legalusemodel$coefficients
+```
+
+As one might have guessed, the personality traits that most directly predict variety of drugs ever used are 'opentoexperience' and 'sensation'. The predictors 'agreeableness' and 'conscientiousness' have fairly large negative coefficient, suggesting that people who are generally more careful and polite tend not to experiment with using different drugs.
+
+The largest coefficient of the background predictors is for ethnicityMixed-White/Asian, though this is anomalous for the same reasons as discussed above. In short, a 25-34 year old white/asian male in America is statistically very likely to have experimented with many drugs (most of these predictors also have a small $P(<|z|)$ value, so this is justified), whilst an uneducated black lady over the age of 65 in the UK is very unlikely to have done so.
+
+As for legal substance use, only nicotine gives any real insight; it weakly positively correlates with having taken a wide variety of drugs before, and the other stubstances barely at all. This could be a consequence of there only being four predictors in this batch, meaning the model has more trouble extrapolating from the data, or it could simply mean that eating chocolate and drinking coffee/alcohol are not good indicators of drug experimentation.
+
+
